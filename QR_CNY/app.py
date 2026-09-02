@@ -9,7 +9,7 @@ from io import BytesIO
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(
     page_title="Gestión de Asistencia Escolar",
-    page_icon="🏫",
+    page_icon="escudo.png",
     layout="wide",
     initial_sidebar_state="expanded"
 )
