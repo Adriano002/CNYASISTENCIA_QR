@@ -4,4 +4,7 @@ qrcode
 openpyxl
 opencv-python-headless
 pyzbar
-libsql-client
+libsql-
+reportlab
+
+
