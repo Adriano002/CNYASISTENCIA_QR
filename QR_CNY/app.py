@@ -15,27 +15,25 @@ st.set_page_config(
 
 
 # =====================================================================
-# CAPA DE CONEXIÓN A BASE DE DATOS (SEPARADA Y CENTRALIZADA)
+# CAPA DE CONEXIÓN A BASE DE DATOS (CENTRALIZADA)
 # =====================================================================
 def obtener_conexion():
     """Conecta a la base de datos remota (Turso) si las credenciales están
 
     configuradas en st.secrets, o utiliza SQLite local como respaldo.
-    Preparado para desacoplar la BD en un servicio independiente.
     """
     try:
         if "TURSO_DATABASE_URL" in st.secrets and "TURSO_AUTH_TOKEN" in st.secrets:
             import libsql_client
-            # Conexión nativa con libsql / Turso separado
             url = st.secrets["TURSO_DATABASE_URL"]
             auth_token = st.secrets["TURSO_AUTH_TOKEN"]
-            # Si usas el cliente HTTP/WebSocket de Turso, puedes inicializarlo aquí.
-            # Para mantener compatibilidad universal con sqlite3/libsql en Streamlit:
-            pass
+            # Si usas el cliente libsql de Turso:
+            conn = libsql_client.connect(url=url, auth_token=auth_token)
+            return conn
     except Exception:
         pass
 
-    # Conexión genérica robusta (Soporta archivo local o pool remoto)
+    # Respaldo local SQLite
     db_path = st.secrets.get("DB_PATH", "asistencia_enterprise.db")
     conn = sqlite3.connect(db_path, check_same_thread=False)
     return conn
@@ -86,28 +84,42 @@ def inicializar_bd():
     ]
 
     for tabla_sql in tablas:
-        cursor.execute(tabla_sql)
+        try:
+            cursor.execute(tabla_sql)
+        except Exception:
+            pass
 
     # Crear usuarios por defecto si la tabla está vacía
-    cursor.execute("SELECT COUNT(*) FROM usuarios")
-    if cursor.fetchone()[0] == 0:
-        cursor.executemany(
-            "INSERT INTO usuarios VALUES (?, ?, ?, ?)",
-            [
-                ("admin", "admin2026", "Directivo", "Administrador General"),
-                ("puerta", "puerta2026", "Auxiliar de Puerta", "Auxiliar de Turno"),
-            ],
-        )
+    try:
+        cursor.execute("SELECT COUNT(*) FROM usuarios")
+        res = cursor.fetchone()
+        count = res[0] if res else 0
+        if count == 0:
+            cursor.executemany(
+                "INSERT INTO usuarios VALUES (?, ?, ?, ?)",
+                [
+                    ("admin", "admin2026", "Directivo", "Administrador General"),
+                    ("puerta", "puerta2026", "Auxiliar de Puerta", "Auxiliar de Turno"),
+                ],
+            )
+            try:
+                conn.commit()
+            except Exception:
+                pass
+    except Exception:
+        pass
 
-    conn.commit()
-    conn.close()
+    try:
+        conn.close()
+    except Exception:
+        pass
 
 
 inicializar_bd()
 
 
 # =====================================================================
-# FUNCIONES AUXILIARES Y DE NEGOCIO (OPTIMIZADAS)
+# FUNCIONES AUXILIARES Y DE NEGOCIO
 # =====================================================================
 def registrar_auditoria(usuario, accion):
     try:
@@ -118,7 +130,10 @@ def registrar_auditoria(usuario, accion):
             "INSERT INTO auditoria (usuario, accion, fecha_hora) VALUES (?, ?, ?)",
             (usuario, accion, ahora),
         )
-        conn.commit()
+        try:
+            conn.commit()
+        except Exception:
+            pass
         conn.close()
     except Exception:
         pass
@@ -163,7 +178,10 @@ def procesar_registro_asistencia(dni_limpio, origen_accion):
         "INSERT INTO asistencias (dni, fecha, hora, estado) VALUES (?, ?, ?, ?)",
         (dni_limpio, hoy, hora, estado),
     )
-    conn.commit()
+    try:
+        conn.commit()
+    except Exception:
+        pass
     conn.close()
 
     registrar_auditoria(
@@ -247,7 +265,6 @@ def generar_pdf_carnets_seccion(df_alumnos_seccion, seccion):
             apellidos = str(alumno["apellidos"])
             gr_sec = str(alumno["grado_seccion"])
 
-            # Generar QR en memoria
             qr = qrcode.QRCode(version=1, box_size=3, border=1)
             qr.add_data(dni)
             qr.make(fit=True)
@@ -258,7 +275,6 @@ def generar_pdf_carnets_seccion(df_alumnos_seccion, seccion):
 
             qr_img_rl = RLImage(qr_io, width=70, height=70)
 
-            # Estructura interna del carnet
             contenido_carnet = [
                 Paragraph("<b>I.E. YARINACOCHA</b>", ParagraphStyle('C1', parent=estilos['Normal'], fontSize=8, alignment=1, textColor=colors.HexColor('#1e3a8a'))),
                 Paragraph("Control de Asistencia", ParagraphStyle('C2', parent=estilos['Normal'], fontSize=6, alignment=1, textColor=colors.gray)),
@@ -334,7 +350,10 @@ if not st.session_state.autenticado:
                 cursor = conn.cursor()
                 cursor.execute("SELECT rol, nombres_completos FROM usuarios WHERE usuario = ? AND password = ?", (usuario_input, password_input))
                 user_db = cursor.fetchone()
-                conn.close()
+                try:
+                    conn.close()
+                except Exception:
+                    pass
 
                 if user_db:
                     st.session_state.autenticado = True
@@ -433,13 +452,19 @@ with tabs[0]:
         cursor = conn.cursor()
         cursor.execute("SELECT DISTINCT grado_seccion FROM alumnos ORDER BY grado_seccion ASC")
         grados_db = [row[0] for row in cursor.fetchall()]
-        conn.close()
+        try:
+            conn.close()
+        except Exception:
+            pass
 
         if grados_db:
             seccion_sel = st.selectbox("Seleccione Grado y Sección:", grados_db)
             conn = obtener_conexion()
             df_sec = pd.read_sql("SELECT dni, nombres, apellidos FROM alumnos WHERE grado_seccion = ? ORDER BY apellidos ASC", conn, params=(seccion_sel,))
-            conn.close()
+            try:
+                conn.close()
+            except Exception:
+                pass
 
             if not df_sec.empty:
                 for _, row in df_sec.iterrows():
@@ -458,7 +483,7 @@ with tabs[0]:
 
 
 # =====================================================================
-# TAB 1 (DIRECTIVO): IMPORTAR PADRÓN DESDE EXCEL
+# TAB 1 (DIRECTIVO): IMPORTAR PADRÓN DESDE EXCEL Y ELIMINAR ALUMNOS
 # =====================================================================
 if st.session_state.rol == "Directivo":
     with tabs[1]:
@@ -488,8 +513,15 @@ if st.session_state.rol == "Directivo":
                                     if cursor.rowcount > 0: exitos += 1
                                     else: duplicados += 1
                                 except Exception: pass
-                        conn.commit()
-                        conn.close()
+                        try:
+                            conn.commit()
+                        except Exception:
+                            pass
+                        try:
+                            conn.close()
+                        except Exception:
+                            pass
+
                         registrar_auditoria(st.session_state.user, f"Importación de padrón: {exitos} alumnos.")
                         st.success(f"✅ Importación exitosa. Nuevos: {exitos} | Duplicados omitidos: {duplicados}")
                 else:
@@ -497,27 +529,75 @@ if st.session_state.rol == "Directivo":
             except Exception as e:
                 st.error(f"Error al procesar el archivo: {e}")
 
+        st.markdown("---")
+        st.markdown("#### 🗑️ Gestión y Eliminación de Alumnos del Padrón")
+        conn = obtener_conexion()
+        df_alumnos_todos = pd.read_sql("SELECT dni, nombres, apellidos, grado_seccion FROM alumnos ORDER BY grado_seccion, apellidos ASC", conn)
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+        if not df_alumnos_todos.empty:
+            busqueda_alumno = st.text_input("🔍 Buscar alumno por DNI o Apellidos para eliminar:", placeholder="Escriba para filtrar...")
+            if busqueda_alumno:
+                df_filtrado = df_alumnos_todos[
+                    df_alumnos_todos['dni'].str.contains(busqueda_alumno, case=False, na=False) |
+                    df_alumnos_todos['apellidos'].str.contains(busqueda_alumno, case=False, na=False)
+                ]
+            else:
+                df_filtrado = df_alumnos_todos.head(10) # Mostrar los primeros 10 por rendimiento
+
+            st.write(f"Mostrando {len(df_filtrado)} alumnos:")
+            for _, al_row in df_filtrado.iterrows():
+                col_a1, col_a2 = st.columns([3, 1])
+                with col_a1:
+                    st.write(f"**{al_row['apellidos']}**, {al_row['nombres']} — DNI: `{al_row['dni']}` | Sección: *{al_row['grado_seccion']}*")
+                with col_a2:
+                    if st.button("🗑️ Eliminar Alumno", key=f"del_al_{al_row['dni']}"):
+                        conn = obtener_conexion()
+                        cur = conn.cursor()
+                        # Borrar asistencias asociadas primero para evitar conflictos de llave foránea
+                        cur.execute("DELETE FROM asistencias WHERE dni = ?", (al_row['dni'],))
+                        cur.execute("DELETE FROM alumnos WHERE dni = ?", (al_row['dni'],))
+                        try:
+                            conn.commit()
+                        except Exception:
+                            pass
+                        try:
+                            conn.close()
+                        except Exception:
+                            pass
+                        registrar_auditoria(st.session_state.user, f"Eliminó al alumno DNI: {al_row['dni']}")
+                        st.success(f"Alumno con DNI {al_row['dni']} eliminado correctamente.")
+                        st.rerun()
+        else:
+            st.info("No hay alumnos registrados en el padrón.")
+
 
 # =====================================================================
-# SECCIÓN DE REPORTES Y SEMÁFORO DE AULAS
+# SECCIÓN DE REPORTES, SEMÁFORO Y ELIMINACIÓN DE ASISTENCIAS
 # =====================================================================
 idx_rep = 2
 with tabs[idx_rep]:
-    st.markdown("#### 📊 Reportes de Asistencia y Semáforo de Aulas")
+    st.markdown("#### 📊 Reportes de Asistencia, Semáforo y Control de Registros")
 
     f_fecha = st.date_input("Seleccione fecha de consulta:", value=datetime.now().date())
     f_str = f_fecha.strftime("%Y-%m-%d")
 
     conn = obtener_conexion()
     query = """
-        SELECT a.dni, a.apellidos, a.nombres, a.grado_seccion, ast.fecha, ast.hora, ast.estado
+        SELECT ast.id, a.dni, a.apellidos, a.nombres, a.grado_seccion, ast.fecha, ast.hora, ast.estado
         FROM asistencias ast
         JOIN alumnos a ON ast.dni = a.dni
         WHERE ast.fecha = ?
         ORDER BY ast.hora DESC
     """
     df_rep = pd.read_sql(query, conn, params=(f_str,))
-    conn.close()
+    try:
+        conn.close()
+    except Exception:
+        pass
 
     # --- SEMÁFORO DE AULAS ---
     st.markdown("##### 🚦 Semáforo de Asistencia por Aulas (Hoy)")
@@ -533,7 +613,10 @@ with tabs[idx_rep]:
         ORDER BY al.grado_seccion ASC
     """
     df_sem = pd.read_sql(query_semaforo, conn, params=(f_str,))
-    conn.close()
+    try:
+        conn.close()
+    except Exception:
+        pass
 
     if not df_sem.empty:
         cols = st.columns(min(len(df_sem), 4))
@@ -542,7 +625,6 @@ with tabs[idx_rep]:
             asistentes = row["asistentes"]
             pct = (asistentes / total * 100) if total > 0 else 0
 
-            # Color del semáforo
             color_bg = "#dcfce7" if pct >= 80 else ("#fef9c3" if pct >= 50 else "#fee2e2")
             borde_color = "#16a34a" if pct >= 80 else ("#ca8a04" if pct >= 50 else "#dc2626")
 
@@ -556,23 +638,47 @@ with tabs[idx_rep]:
                 """, unsafe_allow_html=True)
 
     st.markdown("---")
-    st.markdown("##### 📄 Exportar Reporte Diario")
+    st.markdown("##### 📄 Exportar Reporte Diario y Gestión de Asistencias")
+    
     if not df_rep.empty:
         st.dataframe(df_rep, use_container_width=True)
 
         col_b1, col_b2 = st.columns(2)
         with col_b1:
-            # Excel
             output = BytesIO()
             with pd.ExcelWriter(output, engine="openpyxl") as writer:
                 df_rep.to_excel(writer, index=False, sheet_name="Asistencia")
             st.download_button("📥 Descargar Excel", data=output.getvalue(), file_name=f"asistencia_{f_str}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
 
         with col_b2:
-            # PDF
             pdf_bytes = generar_pdf_reporte_diario(df_rep, f_str)
             if pdf_bytes:
                 st.download_button("📥 Descargar Reporte en PDF", data=pdf_bytes, file_name=f"reporte_asistencia_{f_str}.pdf", mime="application/pdf", use_container_width=True)
+
+        # ELIMINAR REGISTROS DE ASISTENCIA ERRÓNEOS (Solo Directivo)
+        if st.session_state.rol == "Directivo":
+            st.markdown("<br>", unsafe_allow_html=True)
+            with st.expander("🗑️ Eliminar un registro de asistencia específico (Corrección)"):
+                asistencia_a_borrar = st.selectbox(
+                    "Seleccione el registro de asistencia a eliminar:",
+                    options=df_rep['id'].tolist(),
+                    format_func=lambda x: f"ID: {x} - {df_rep[df_rep['id']==x]['apellidos'].values[0]}, {df_rep[df_rep['id']==x]['nombres'].values[0]} ({df_rep[df_rep['id']==x]['hora'].values[0]})"
+                )
+                if st.button("Eliminar Registro Seleccionado"):
+                    conn = obtener_conexion()
+                    cur = conn.cursor()
+                    cur.execute("DELETE FROM asistencias WHERE id = ?", (asistencia_a_borrar,))
+                    try:
+                        conn.commit()
+                    except Exception:
+                        pass
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+                    registrar_auditoria(st.session_state.user, f"Eliminó el registro de asistencia ID: {asistencia_a_borrar}")
+                    st.success("✅ Registro de asistencia eliminado correctamente.")
+                    st.rerun()
     else:
         st.info("ℹ️ No hay registros para la fecha seleccionada.")
 
@@ -589,14 +695,20 @@ if st.session_state.rol == "Directivo":
         cur_c = conn.cursor()
         cur_c.execute("SELECT DISTINCT grado_seccion FROM alumnos ORDER BY grado_seccion ASC")
         secciones_c = [r[0] for r in cur_c.fetchall()]
-        conn.close()
+        try:
+            conn.close()
+        except Exception:
+            pass
 
         if secciones_c:
             secc_elegida = st.selectbox("Seleccione la Sección para Carnets:", secciones_c, key="sel_sec_carnets")
             
             conn = obtener_conexion()
             df_carnets = pd.read_sql("SELECT dni, nombres, apellidos, grado_seccion FROM alumnos WHERE grado_seccion = ? ORDER BY apellidos ASC", conn, params=(secc_elegida,))
-            conn.close()
+            try:
+                conn.close()
+            except Exception:
+                pass
 
             st.write(f"Estudiantes en la sección **{secc_elegida}**: {len(df_carnets)}")
 
@@ -639,8 +751,14 @@ if st.session_state.rol == "Directivo":
                         conn = obtener_conexion()
                         cur = conn.cursor()
                         cur.execute("INSERT INTO usuarios VALUES (?, ?, ?, ?)", (n_user.strip(), n_pass.strip(), n_rol, n_nombre.strip()))
-                        conn.commit()
-                        conn.close()
+                        try:
+                            conn.commit()
+                        except Exception:
+                            pass
+                        try:
+                            conn.close()
+                        except Exception:
+                            pass
                         registrar_auditoria(st.session_state.user, f"Creó usuario: {n_user}")
                         st.success(f"✅ Usuario {n_user} creado.")
                         st.rerun()
@@ -653,20 +771,29 @@ if st.session_state.rol == "Directivo":
         st.markdown("##### Usuarios Actuales / Eliminar Usuario")
         conn = obtener_conexion()
         df_usr = pd.read_sql("SELECT usuario, rol, nombres_completos FROM usuarios", conn)
-        conn.close()
+        try:
+            conn.close()
+        except Exception:
+            pass
 
         for _, u_row in df_usr.iterrows():
             c_u1, c_u2 = st.columns([3, 1])
             with c_u1:
                 st.write(f"👤 **{u_row['nombres_completos']}** (`{u_row['usuario']}`) — Rol: *{u_row['rol']}*")
             with c_u2:
-                if u_row['usuario'] != "admin": # Prevenir borrar al admin principal por accidente
-                    if st.button("🗑️ Eliminar", key=f"del_u_{u_row['usuario']}"):
+                if u_row['usuario'] != "admin":
+                    if st.button("🗑️ Eliminar Usuario", key=f"del_u_{u_row['usuario']}"):
                         conn = obtener_conexion()
                         cur = conn.cursor()
                         cur.execute("DELETE FROM usuarios WHERE usuario = ?", (u_row['usuario'],))
-                        conn.commit()
-                        conn.close()
+                        try:
+                            conn.commit()
+                        except Exception:
+                            pass
+                        try:
+                            conn.close()
+                        except Exception:
+                            pass
                         registrar_auditoria(st.session_state.user, f"Eliminó al usuario: {u_row['usuario']}")
                         st.success(f"Usuario {u_row['usuario']} eliminado.")
                         st.rerun()
@@ -675,5 +802,8 @@ if st.session_state.rol == "Directivo":
         st.markdown("#### 📋 Auditoría del Sistema")
         conn = obtener_conexion()
         df_audit = pd.read_sql("SELECT * FROM auditoria ORDER BY id DESC LIMIT 100", conn)
-        conn.close()
+        try:
+            conn.close()
+        except Exception:
+            pass
         st.dataframe(df_audit, use_container_width=True)
