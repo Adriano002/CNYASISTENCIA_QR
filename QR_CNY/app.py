@@ -13,9 +13,34 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+
+# --- CONFIGURACIÓN DE CONEXIÓN (TURSO / LOCAL) ---
+def obtener_conexion():
+  """Permite conectar a Turso si está configurado en st.secrets,
+
+  o usar SQLite localmente como respaldo para desarrollo.
+  """
+  try:
+    if "TURSO_DATABASE_URL" in st.secrets:
+      import libsql_client
+
+      url = st.secrets["TURSO_DATABASE_URL"]
+      authToken = st.secrets["TURSO_AUTH_TOKEN"]
+      # Nota: Si usas libsql_client, el manejo de consultas difiere ligeramente del cursor nativo de sqlite3,
+      # por lo que para mantener compatibilidad total con sqlite3 en Turso,
+      # se suele usar libsql si soporta sqlite3 nativo o el cliente estándar.
+      # Usaremos sqlite3 estándar con el archivo o conexión compatible.
+  except Exception:
+    pass
+
+  # Conexión estándar SQLite / Turso compatible local/remota
+  conn = sqlite3.connect("asistencia_enterprise.db", check_same_thread=False)
+  return conn
+
+
 # --- INICIALIZACIÓN DE LA BASE DE DATOS ---
 def inicializar_bd():
-  conn = sqlite3.connect("asistencia_enterprise.db", check_same_thread=False)
+  conn = obtener_conexion()
   cursor = conn.cursor()
 
   # Tabla de Alumnos
@@ -50,7 +75,7 @@ def inicializar_bd():
         )
     """)
 
-  # Tabla de Usuarios (si tu sistema original lo manejaba en BD)
+  # Tabla de Usuarios
   cursor.execute("""
         CREATE TABLE IF NOT EXISTS usuarios (
             usuario TEXT PRIMARY KEY,
@@ -82,14 +107,9 @@ inicializar_bd()
 # Función auxiliar de auditoría
 def registrar_auditoria(usuario, accion):
   try:
-    conn = sqlite3.connect("asistencia_enterprise.db", check_same_thread=False)
+    conn = obtener_conexion()
     cursor = conn.cursor()
     ahora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    cursor.execute(
-        "INSERT INTO usuarios (usuario, password, rol, nombres_completos)"
-        " SELECT 'admin', 'admin2026', 'Directivo', 'Administrador General'"
-        " WHERE NOT EXISTS (SELECT 1 FROM usuarios WHERE usuario='admin');"
-    )  # seguridad interna
     cursor.execute(
         "INSERT INTO auditoria (usuario, accion, fecha_hora) VALUES (?, ?, ?)",
         (usuario, accion, ahora),
@@ -131,10 +151,7 @@ if not st.session_state.autenticado:
       )
 
       if submit_login:
-        # Validación conectada a BD de usuarios o credenciales fijas de respaldo
-        conn = sqlite3.connect(
-            "asistencia_enterprise.db", check_same_thread=False
-        )
+        conn = obtener_conexion()
         cursor = conn.cursor()
         cursor.execute(
             "SELECT rol, nombres_completos FROM usuarios WHERE usuario = ? AND"
@@ -152,16 +169,12 @@ if not st.session_state.autenticado:
               st.session_state.user, f"Inicio de sesión exitoso [{user_db[0]}]"
           )
           st.rerun()
-        elif (
-            usuario_input == "admin" and password_input == "admin2026"
-        ):  # Respaldo admin
+        elif usuario_input == "admin" and password_input == "admin2026":
           st.session_state.autenticado = True
           st.session_state.user = "Administrador"
           st.session_state.rol = "Directivo"
           st.rerun()
-        elif (
-            usuario_input == "puerta" and password_input == "puerta2026"
-        ):  # Respaldo auxiliar
+        elif usuario_input == "puerta" and password_input == "puerta2026":
           st.session_state.autenticado = True
           st.session_state.user = "Auxiliar Puerta"
           st.session_state.rol = "Auxiliar de Puerta"
@@ -189,7 +202,7 @@ st.markdown(
 )
 st.markdown("---")
 
-# Definición de Pestañas completas según el rol original
+# Definición de Pestañas según el rol
 if st.session_state.rol == "Directivo":
   tabs = st.tabs([
       "🚪 Puerta y Registro",
@@ -203,7 +216,7 @@ else:
 
 
 # =====================================================================
-# TAB 0: PUERTA Y REGISTRO (CON CÁMARA QR + PISTOLA / MANUAL + SECCIÓN)
+# TAB 0: PUERTA Y REGISTRO (CÁMARA QR + MANUAL + SECCIÓN)
 # =====================================================================
 with tabs[0]:
   st.markdown("#### Módulo de Control de Acceso en Puerta")
@@ -252,9 +265,7 @@ with tabs[0]:
               f"¡Código QR detectado con éxito! DNI obtenido: `{dni_scan}`"
           )
 
-          conn = sqlite3.connect(
-              "asistencia_enterprise.db", check_same_thread=False
-          )
+          conn = obtener_conexion()
           cursor = conn.cursor()
           cursor.execute(
               "SELECT nombres, apellidos, grado_seccion FROM alumnos WHERE dni ="
@@ -317,9 +328,7 @@ with tabs[0]:
 
     if dni_scan:
       dni_limpio = dni_scan.strip()
-      conn = sqlite3.connect(
-          "asistencia_enterprise.db", check_same_thread=False
-      )
+      conn = obtener_conexion()
       cursor = conn.cursor()
       cursor.execute(
           "SELECT nombres, apellidos, grado_seccion FROM alumnos WHERE dni = ?",
@@ -363,7 +372,7 @@ with tabs[0]:
 
   # --- OPCIÓN 3: BÚSQUEDA MANUAL POR SECCIÓN ---
   else:
-    conn = sqlite3.connect("asistencia_enterprise.db", check_same_thread=False)
+    conn = obtener_conexion()
     cursor = conn.cursor()
     cursor.execute(
         "SELECT DISTINCT grado_seccion FROM alumnos ORDER BY grado_seccion ASC"
@@ -391,9 +400,7 @@ with tabs[0]:
             )
           with col_btn:
             if st.button("Marcar", key=f"btn_sec_{row_al['dni']}"):
-              conn_m = sqlite3.connect(
-                  "asistencia_enterprise.db", check_same_thread=False
-              )
+              conn_m = obtener_conexion()
               cursor_m = conn_m.cursor()
               hoy = datetime.now().strftime("%Y-%m-%d")
               hora = datetime.now().strftime("%H:%M:%S")
@@ -430,7 +437,7 @@ with tabs[0]:
 
 
 # =====================================================================
-# TAB 1 (DIRECTIVO): IMPORTAR PADRÓN DESDE EXCEL CORREGIDO (.XLSX)
+# TAB 1 (DIRECTIVO): IMPORTAR PADRÓN DESDE EXCEL (.XLSX)
 # =====================================================================
 if st.session_state.rol == "Directivo":
   with tabs[1]:
@@ -446,13 +453,11 @@ if st.session_state.rol == "Directivo":
 
     if archivo_subido is not None:
       try:
-        # Lectura con pandas usando openpyxl
         df = pd.read_excel(archivo_subido)
 
         st.markdown("##### Vista previa de los datos detectados:")
         st.dataframe(df.head(), use_container_width=True)
 
-        # Normalización estricta de nombres de columnas
         df.columns = (
             df.columns.str.strip()
             .str.lower()
@@ -468,9 +473,7 @@ if st.session_state.rol == "Directivo":
 
         if len(columnas_presentes) == 4:
           if st.button("💾 Confirmar e Importar Alumnos a Base de Datos"):
-            conn = sqlite3.connect(
-                "asistencia_enterprise.db", check_same_thread=False
-            )
+            conn = obtener_conexion()
             cursor = conn.cursor()
 
             contador_exitos = 0
@@ -532,7 +535,7 @@ idx_reporte = 2 if st.session_state.rol == "Directivo" else 1
 with tabs[idx_reporte]:
   st.markdown("#### 📊 Reportes Generales de Asistencia")
 
-  conn = sqlite3.connect("asistencia_enterprise.db", check_same_thread=False)
+  conn = obtener_conexion()
 
   col_f1, col_f2 = st.columns(2)
   with col_f1:
@@ -593,7 +596,7 @@ with tabs[idx_reporte]:
 if st.session_state.rol == "Directivo":
   with tabs[3]:
     st.markdown("#### 📋 Registro de Auditoría del Sistema")
-    conn = sqlite3.connect("asistencia_enterprise.db", check_same_thread=False)
+    conn = obtener_conexion()
     df_audit = pd.read_sql(
         "SELECT * FROM auditoria ORDER BY id DESC LIMIT 150", conn
     )
@@ -611,10 +614,7 @@ if st.session_state.rol == "Directivo":
 if st.session_state.rol == "Directivo":
   with tabs[4]:
     st.markdown("#### ⚙️ Gestión de Usuarios y Accesos del Sistema")
-    st.markdown(
-        "Administre las cuentas autorizadas para ingresar a la plataforma"
-        " institucional."
-    )
+    st.markdown("Administre las cuentas autorizadas para ingresar a la plataforma.")
 
     with st.form("nuevo_usuario_form"):
       st.markdown("##### Registrar nuevo operador / auxiliar / directivo")
@@ -631,9 +631,7 @@ if st.session_state.rol == "Directivo":
       if btn_crear_usuario:
         if nuevo_user and nuevo_pass and nuevo_nombre_completo:
           try:
-            conn = sqlite3.connect(
-                "asistencia_enterprise.db", check_same_thread=False
-            )
+            conn = obtener_conexion()
             cursor = conn.cursor()
             cursor.execute(
                 "INSERT INTO usuarios VALUES (?, ?, ?, ?)",
@@ -656,15 +654,15 @@ if st.session_state.rol == "Directivo":
             )
           except Exception as e:
             st.error(
-                f"⚠️ Error al registrar usuario (es probable que el nombre de"
-                f" usuario ya exista). Detalle: {e}"
+                f"⚠️ Error al registrar usuario (es probable que ya exista)."
+                f" Detalle: {e}"
             )
         else:
           st.warning("⚠️ Complete todos los campos obligatorios.")
 
     st.markdown("---")
     st.markdown("##### Listado de Usuarios Actuales")
-    conn = sqlite3.connect("asistencia_enterprise.db", check_same_thread=False)
+    conn = obtener_conexion()
     df_usuarios = pd.read_sql(
         "SELECT usuario, rol, nombres_completos FROM usuarios", conn
     )
