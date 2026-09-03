@@ -348,8 +348,15 @@ if not st.session_state.autenticado:
             if submit_login:
                 conn = obtener_conexion()
                 cursor = conn.cursor()
-                cursor.execute("SELECT rol, nombres_completos FROM usuarios WHERE usuario = ? AND password = ?", (usuario_input, password_input))
+                
+                # AQUÍ ESTÁ EL CAMBIO: Usamos 'username' en lugar de 'usuario' 
+                # porque así se llama la columna en tu base de datos de Turso
+                cursor.execute(
+                    "SELECT rol, username FROM usuarios WHERE username = ? AND password = ?",
+                    (usuario_input, password_input)
+                )
                 user_db = cursor.fetchone()
+                
                 try:
                     conn.close()
                 except Exception:
@@ -357,8 +364,8 @@ if not st.session_state.autenticado:
 
                 if user_db:
                     st.session_state.autenticado = True
-                    st.session_state.user = user_db[1]
-                    st.session_state.rol = user_db[0]
+                    st.session_state.user = user_db[1]  # Guarda el username
+                    st.session_state.rol = user_db[0]   # Guarda el rol
                     registrar_auditoria(st.session_state.user, f"Inicio de sesión exitoso [{user_db[0]}]")
                     st.rerun()
                 elif usuario_input == "admin" and password_input == "admin2026":
