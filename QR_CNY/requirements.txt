@@ -2,3 +2,6 @@ streamlit
 pandas
 qrcode
 openpyxl
+opencv-python-headless
+pyzbar
+libsql-client
